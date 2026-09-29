@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     allowed_telegram_user_ids: str = ''
     min_ath_mc_usd: float = 3_000_000
     default_wallet_limit: int = 30
+    railway_public_domain: str | None = None
+    webhook_path: str = 'telegram'
+    port: int = 8080
     model_config = SettingsConfigDict(env_file='.env', extra='ignore', case_sensitive=False)
 
     @property
