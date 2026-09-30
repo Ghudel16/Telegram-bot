@@ -89,17 +89,69 @@ class ResearchEngine:
             info = await self.gmgn.token_info(chain, address)
             security = await self.gmgn.token_security(chain, address)
             pool = await self.gmgn.token_pool(chain, address)
-            holders = await self.gmgn.top_holders(chain, address, req.wallet_limit)
-            traders = await self.gmgn.top_traders(chain, address, req.wallet_limit)
+            holders = await self.gmgn.top_holders(chain, address, max(req.wallet_limit, 10))
+            traders = await self.gmgn.top_traders(chain, address, max(req.wallet_limit, 10))
+
+            token_data = compact(info)
+            security_data = compact(security)
+            pool_data = compact(pool)
+            holders_data = compact(holders)
+            traders_data = compact(traders)
+
+            def rows(obj):
+                if isinstance(obj, dict):
+                    for key in ("holders", "list", "data", "top_holders", "rank"):
+                        value = obj.get(key)
+                        if isinstance(value, list):
+                            return value
+                return obj if isinstance(obj, list) else []
+
+            holder_rows = rows(holders_data)[:10]
+
+            def first_value(*sources):
+                for source, keys in sources:
+                    if isinstance(source, dict):
+                        for key in keys:
+                            value = source.get(key)
+                            if value not in (None, ""):
+                                return value
+                return None
+
+            top10_rate = first_value(
+                (token_data, ("top_10_holder_rate", "top10_holder_rate")),
+                (security_data, ("top_10_holder_rate", "top10_holder_rate")),
+                (holders_data, ("top_10_holder_rate", "top10_holder_rate")),
+            )
+
+            summary = {
+                "name": first_value((token_data, ("name",))),
+                "symbol": first_value((token_data, ("symbol",))),
+                "price": first_value((token_data, ("price",))),
+                "market_cap": first_value((token_data, ("market_cap", "market_cap_usd", "mc"))),
+                "ath_price": first_value((token_data, ("ath_price",))),
+                "ath_market_cap": first_value((token_data, ("ath_market_cap", "history_highest_market_cap", "history_highest_mc"))),
+                "ath_timestamp": first_value((token_data, ("ath_ts", "ath_timestamp", "history_highest_market_cap_timestamp"))),
+                "liquidity": first_value((token_data, ("liquidity", "liquidity_usd"))),
+                "volume_24h": first_value((token_data, ("volume_24h", "volume", "volume_usd"))),
+                "holder_count": first_value((token_data, ("holder_count",))),
+                "top_10_holder_rate": top10_rate,
+                "creator_hold_rate": first_value((token_data, ("creator_hold_rate",)), (security_data, ("creator_hold_rate",))),
+                "dev_team_hold_rate": first_value((token_data, ("dev_team_hold_rate",)), (security_data, ("dev_team_hold_rate",))),
+                "wallet_tags_stat": token_data.get("wallet_tags_stat") if isinstance(token_data, dict) else None,
+            }
+
             payload = {
                 "mode": "token_research",
                 "chain": chain,
                 "address": address,
-                "token": compact(info),
-                "security": compact(security),
-                "pool": compact(pool),
-                "top_holders": compact(holders),
-                "top_traders": compact(traders),
+                "summary": summary,
+                "token": token_data,
+                "security": security_data,
+                "pool": pool_data,
+                "top_10_holders": holder_rows,
+                "top_10_holder_rate": top10_rate,
+                "top_holders": holders_data,
+                "top_traders": traders_data,
             }
             return (await self.router.synthesize(text, payload))[:3900]
 
