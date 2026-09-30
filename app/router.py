@@ -109,7 +109,7 @@ class AIRouter:
                 "⚠️ DATA NOTE",
                 "Ranking yang diterima adalah snapshot GMGN pada interval data yang tersedia.",
                 "Filter ATH ≥ MC menggunakan field history_highest_market_cap GMGN.",
-                "Untuk 7/30 hari, window menentukan umur token yang dicari; ATH yang ditampilkan adalah ATH all-time GMGN, bukan ATH khusus window."
+                "Untuk 7/30 hari, window menentukan umur token yang dicari; ATH yang ditampilkan adalah ATH all-time GMGN, bukan ATH khusus window.",
                 "",
                 "🧠 Untuk deep research token: kirim CA (contract address).",
             ]
