@@ -88,15 +88,11 @@ class AIRouter:
 
     async def _call(self, name: str, key: str, base_url: str | None, model: str, messages: list[dict]) -> str:
         if name == "gemini":
-            prompt = "
-
-".join(
-                f"{m['role'].upper()}:
-{m['content']}" for m in messages
+            prompt = "\n\n".join(
+                f"{m['role'].upper()}:\n{m['content']}" for m in messages
             )
             r = await self.client.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                + model + ":generateContent",
+                "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent",
                 params={"key": key},
                 json={"contents": [{"parts": [{"text": prompt}]}]},
             )
@@ -107,10 +103,7 @@ class AIRouter:
         url = base_url.rstrip("/") + "/chat/completions"
         r = await self.client.post(
             url,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
             json={
                 "model": model,
                 "messages": messages,
@@ -126,9 +119,7 @@ class AIRouter:
             raise RuntimeError("provider returned no choices")
         content = (choices[0].get("message") or {}).get("content")
         if isinstance(content, list):
-            content = "".join(
-                x.get("text", "") for x in content if isinstance(x, dict)
-            )
+            content = "".join(x.get("text", "") for x in content if isinstance(x, dict))
         if not content:
             raise RuntimeError("provider returned empty content")
         return str(content).strip()
@@ -143,51 +134,36 @@ class AIRouter:
                     return answer
             except Exception as exc:
                 self.last_errors.append(f"{name}: {str(exc)[:180]}")
-                continue
         self.last_provider = None
-        raise RuntimeError("Semua provider AI gagal: " + " | ".join(self.last_errors[:5]))
+        raise RuntimeError("Tutti AI provider gagal: " + " | ".join(self.last_errors[:5]))
 
     async def plan(self, user_text: str) -> str:
-        """Use the AI router itself as a lightweight intent planner.
-
-        The planner never receives credentials and is instructed to return a
-        tiny JSON plan. If planning fails, the research engine uses deterministic
-        fallback routing.
-        """
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the intent planner for a GMGN on-chain research agent. "
-                    "Return ONLY JSON with keys: intent, depth. "
-                    "intent must be one of: token, wallet, market, explain. "
-                    "depth must be one of: quick, deep. "
-                    "Choose token when the user asks about a token/CA, wallet for a wallet address, "
-                    "market for lists/rankings/discovery, and explain for conceptual GMGN questions. "
-                    "Never invent an address."
-                ),
-            },
+            {"role": "system", "content": (
+                "You are an intent planner for a GMGN research agent. "
+                "Return ONLY valid JSON: {\"intent\":\"token|wallet|market|explain\",\"depth\":\"quick|deep\"}. "
+                "Token means token/CA research, wallet means wallet activity, market means discovery/rankings, "
+                "explain means conceptual GMGN questions. Never invent addresses."
+            )},
             {"role": "user", "content": user_text},
         ]
         return await self.ask(messages)
 
     async def synthesize(self, request_text: str, research_payload) -> str:
-        provider_hint = "Provider: " + (self.last_provider or "fallback")
         prompt = (
             "Anda adalah AI crypto/Web3 research analyst di Telegram. "
             "Jawab pertanyaan pengguna berdasarkan DATA GMGN yang diberikan. "
-            "Anda boleh melakukan inferensi analitis, tetapi jangan mengarang angka. "
-            "Pisahkan fakta on-chain dari interpretasi. Jika data tidak tersedia, katakan tidak tersedia. "
-            "Jawaban harus terasa seperti analis AI, bukan dump JSON. "
-            "Gunakan bahasa Indonesia yang jelas, ringkas tetapi mendalam. "
-            "Untuk token: bahas market cap, ATH GMGN, volume, liquidity, holder/trader concentration, "
-            "smart-money signals bila tersedia, security, pool, dan risiko. "
-            "Untuk market: jelaskan mengapa kandidat masuk hasil, bukan sekadar menyalin daftar. "
-            "Untuk wallet: bahas aktivitas, statistik, dan pola yang tersedia. "
+            "Gunakan fakta yang tersedia dan tandai inferensi sebagai analisis. "
+            "Jangan mengarang angka, wallet, holder, trader, ATH, volume, atau transaksi. "
+            "Jika data tidak tersedia, katakan tidak tersedia. "
+            "Untuk token bahas market cap, ATH GMGN, volume, liquidity, holder/trader concentration, "
+            "smart-money signals, security dan pool jika field tersebut tersedia. "
+            "Untuk wallet bahas aktivitas dan statistik yang tersedia. "
+            "Untuk market jelaskan alasan kandidat muncul berdasarkan field GMGN. "
+            "Jawab dalam bahasa Indonesia, natural seperti AI researcher, bukan JSON dump. "
             "Jangan memberikan kepastian profit atau instruksi buy/sell. "
-            "Jangan mengaku memiliki data yang tidak ada. "
-            "User question:\n" + request_text +
-            "\n\nGMGN DATA:\n" + json.dumps(research_payload, ensure_ascii=False, default=str)
+            "Pertanyaan pengguna:\n" + request_text +
+            "\n\nDATA GMGN:\n" + json.dumps(research_payload, ensure_ascii=False, default=str)
         )
         messages = [
             {"role": "system", "content": prompt},
@@ -195,7 +171,7 @@ class AIRouter:
         ]
         try:
             answer = await self.ask(messages)
-            return f"🤖 AI GMGN RESEARCH\n━━━━━━━━━━━━━━━━━━━━\n{answer}\n\n⚙️ {provider_hint}"
+            return "🤖 AI GMGN RESEARCH\n━━━━━━━━━━━━━━━━━━━━\n" + answer + "\n\n⚙️ AI: " + (self.last_provider or "unknown")
         except Exception:
             return self._format_fallback(request_text, research_payload)
 
@@ -204,17 +180,16 @@ class AIRouter:
         if payload.get("mode") == "market_discovery":
             raw = cls._unwrap(payload.get("market_rank", {}))
             rows = raw.get("rank", []) if isinstance(raw, dict) else []
-            rows = rows[:10]
             lines = [
                 "🔎 GMGN MARKET RESEARCH",
                 "━━━━━━━━━━━━━━━━━━━━",
                 f"⛓ Chain: {payload.get('chain', 'N/A').upper()}",
                 f"🕒 Window: {payload.get('window_label', 'N/A')}",
                 f"📡 Data: {payload.get('interval_used', 'N/A')}",
-                f"💰 ATH MC filter: ≥ {cls._num(payload.get('ath_mc_min_usd'), money=True)}",
+                f"💰 ATH MC filter: ≥ {cls._num(payload.get('ath_mc_min_usd'), True)}",
                 "",
             ]
-            for i, coin in enumerate(rows, 1):
+            for i, coin in enumerate(rows[:10], 1):
                 name = coin.get("name") or coin.get("symbol") or "Unknown"
                 symbol = coin.get("symbol") or ""
                 mc = cls._first(coin, "market_cap", "market_cap_usd", "mc")
@@ -226,9 +201,8 @@ class AIRouter:
                     f"   MC {cls._num(mc, True)} | ATH {cls._num(ath, True)}",
                     f"   Vol {cls._num(vol, True)} | Liq {cls._num(liq, True)}",
                 ]
-            lines += ["", "⚠️ Fallback aktif: AI provider tidak merespons."]
-            return "
-".join(lines)
+            lines += ["", "⚠️ AI fallback aktif: semua provider AI gagal."]
+            return "\n".join(lines)
 
         token = cls._unwrap(payload.get("token", {}))
         if not isinstance(token, dict):
