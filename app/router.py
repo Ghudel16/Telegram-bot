@@ -85,23 +85,6 @@ class AIRouter:
         except (TypeError, ValueError):
             return str(value)
 
-    async def _chat_openai_compatible(self, name: str, base_url: str, model: str, messages: list[dict]) -> str:
-        url = base_url.rstrip("/") + "/chat/completions"
-        body = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.2,
-            "max_tokens": 1800,
-            "stream": False,
-        }
-        r = await self.client.post(
-            url,
-            headers={
-                "Authorization": "Bearer " + str(next(k for k, b, m in [(self.settings.agentrouter_api_key,self.settings.agentrouter_base_url,self.settings.agentrouter_model)] if False)),
-            },
-        )
-        return ""
-
     async def _call(self, name: str, key: str, base_url: str | None, model: str, messages: list[dict]) -> str:
         if name == "gemini":
             prompt = "
