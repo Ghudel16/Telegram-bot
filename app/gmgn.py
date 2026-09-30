@@ -48,9 +48,16 @@ class GMGNClient:
 
     async def top_traders(self, chain, address, limit=30):
         return await self.request("GET", "/v1/market/token_top_traders",
-                                  {"chain": chain, "address": address, "limit": limit})
+                                  {
+                                      "chain": chain,
+                                      "address": address,
+                                      "limit": min(int(limit), 100),
+                                      "order_by": "amount_percentage",
+                                      "direction": "desc",
+                                  })
 
     async def wallet_activity(self, chain, wallet, limit=50):
+
         return await self.request("GET", "/v1/user/wallet_activity",
                                   {"chain": chain, "wallet_address": wallet, "limit": limit})
 
