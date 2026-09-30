@@ -4,12 +4,39 @@ from typing import Any
 
 
 class AIRouter:
+    """Multi-provider AI router.
+
+    Every provider is treated as an OpenAI-compatible gateway except Gemini.
+    Providers are attempted in configured order. A timeout, 4xx/5xx, malformed
+    response, or model error automatically advances to the next provider.
+    """
+
     def __init__(self, settings):
         self.settings = settings
-        self.client = httpx.AsyncClient(timeout=45)
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10, read=55, write=20, pool=10)
+        )
+        self.last_provider = None
+        self.last_errors: list[str] = []
 
-    async def plan(self, user_text: str) -> str:
-        return user_text
+    def _providers(self):
+        mapping = {
+            "agentrouter": (self.settings.agentrouter_api_key, self.settings.agentrouter_base_url, self.settings.agentrouter_model),
+            "gemini": (self.settings.gemini_api_key, None, "gemini-2.5-flash"),
+            "seekai": (self.settings.seekai_api_key, self.settings.seekai_base_url, self.settings.seekai_model),
+            "kapibala": (self.settings.kapibala_api_key, self.settings.kapibala_base_url, self.settings.kapibala_model),
+            "tokenharbor": (self.settings.tokenharbor_api_key, self.settings.tokenharbor_base_url, self.settings.tokenharbor_model),
+            "xkiro": (self.settings.xkiro_api_key, self.settings.xkiro_base_url, self.settings.xkiro_model),
+            "infercom": (self.settings.infercom_api_key, self.settings.infercom_base_url, self.settings.infercom_model),
+            "morphllm": (self.settings.morphllm_api_key, self.settings.morphllm_base_url, self.settings.morphllm_model),
+            "iamhc": (self.settings.iamhc_api_key, self.settings.iamhc_base_url, self.settings.iamhc_model),
+            "conduit": (self.settings.conduit_api_key or self.settings.conduit_api_key_2, self.settings.conduit_base_url, self.settings.conduit_model),
+        }
+        order = [x.strip().lower() for x in self.settings.ai_router_order.split(",") if x.strip()]
+        for name in order:
+            item = mapping.get(name)
+            if item and item[0]:
+                yield name, *item
 
     @staticmethod
     def _unwrap(value: Any) -> Any:
@@ -58,124 +85,186 @@ class AIRouter:
         except (TypeError, ValueError):
             return str(value)
 
+    async def _chat_openai_compatible(self, name: str, base_url: str, model: str, messages: list[dict]) -> str:
+        url = base_url.rstrip("/") + "/chat/completions"
+        body = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 1800,
+            "stream": False,
+        }
+        r = await self.client.post(
+            url,
+            headers={
+                "Authorization": "Bearer " + str(next(k for k, b, m in [(self.settings.agentrouter_api_key,self.settings.agentrouter_base_url,self.settings.agentrouter_model)] if False)),
+            },
+        )
+        return ""
+
+    async def _call(self, name: str, key: str, base_url: str | None, model: str, messages: list[dict]) -> str:
+        if name == "gemini":
+            prompt = "
+
+".join(
+                f"{m['role'].upper()}:
+{m['content']}" for m in messages
+            )
+            r = await self.client.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                + model + ":generateContent",
+                params={"key": key},
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+        url = base_url.rstrip("/") + "/chat/completions"
+        r = await self.client.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": 0.2,
+                "max_tokens": 1800,
+                "stream": False,
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise RuntimeError("provider returned no choices")
+        content = (choices[0].get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = "".join(
+                x.get("text", "") for x in content if isinstance(x, dict)
+            )
+        if not content:
+            raise RuntimeError("provider returned empty content")
+        return str(content).strip()
+
+    async def ask(self, messages: list[dict]) -> str:
+        self.last_errors = []
+        for name, key, base_url, model in self._providers():
+            try:
+                answer = await self._call(name, key, base_url, model, messages)
+                if answer:
+                    self.last_provider = name
+                    return answer
+            except Exception as exc:
+                self.last_errors.append(f"{name}: {str(exc)[:180]}")
+                continue
+        self.last_provider = None
+        raise RuntimeError("Semua provider AI gagal: " + " | ".join(self.last_errors[:5]))
+
+    async def plan(self, user_text: str) -> str:
+        """Use the AI router itself as a lightweight intent planner.
+
+        The planner never receives credentials and is instructed to return a
+        tiny JSON plan. If planning fails, the research engine uses deterministic
+        fallback routing.
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the intent planner for a GMGN on-chain research agent. "
+                    "Return ONLY JSON with keys: intent, depth. "
+                    "intent must be one of: token, wallet, market, explain. "
+                    "depth must be one of: quick, deep. "
+                    "Choose token when the user asks about a token/CA, wallet for a wallet address, "
+                    "market for lists/rankings/discovery, and explain for conceptual GMGN questions. "
+                    "Never invent an address."
+                ),
+            },
+            {"role": "user", "content": user_text},
+        ]
+        return await self.ask(messages)
+
+    async def synthesize(self, request_text: str, research_payload) -> str:
+        provider_hint = "Provider: " + (self.last_provider or "fallback")
+        prompt = (
+            "Anda adalah AI crypto/Web3 research analyst di Telegram. "
+            "Jawab pertanyaan pengguna berdasarkan DATA GMGN yang diberikan. "
+            "Anda boleh melakukan inferensi analitis, tetapi jangan mengarang angka. "
+            "Pisahkan fakta on-chain dari interpretasi. Jika data tidak tersedia, katakan tidak tersedia. "
+            "Jawaban harus terasa seperti analis AI, bukan dump JSON. "
+            "Gunakan bahasa Indonesia yang jelas, ringkas tetapi mendalam. "
+            "Untuk token: bahas market cap, ATH GMGN, volume, liquidity, holder/trader concentration, "
+            "smart-money signals bila tersedia, security, pool, dan risiko. "
+            "Untuk market: jelaskan mengapa kandidat masuk hasil, bukan sekadar menyalin daftar. "
+            "Untuk wallet: bahas aktivitas, statistik, dan pola yang tersedia. "
+            "Jangan memberikan kepastian profit atau instruksi buy/sell. "
+            "Jangan mengaku memiliki data yang tidak ada. "
+            "User question:\n" + request_text +
+            "\n\nGMGN DATA:\n" + json.dumps(research_payload, ensure_ascii=False, default=str)
+        )
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": request_text},
+        ]
+        try:
+            answer = await self.ask(messages)
+            return f"🤖 AI GMGN RESEARCH\n━━━━━━━━━━━━━━━━━━━━\n{answer}\n\n⚙️ {provider_hint}"
+        except Exception:
+            return self._format_fallback(request_text, research_payload)
+
     @classmethod
     def _format_fallback(cls, request_text: str, payload: dict) -> str:
         if payload.get("mode") == "market_discovery":
             raw = cls._unwrap(payload.get("market_rank", {}))
             rows = raw.get("rank", []) if isinstance(raw, dict) else []
             rows = rows[:10]
-
             lines = [
                 "🔎 GMGN MARKET RESEARCH",
                 "━━━━━━━━━━━━━━━━━━━━",
-                f"⛓ Chain      : {payload.get('chain', 'N/A').upper()}",
-                f"🕒 Window     : {payload.get('window_label', str(payload.get('requested_window_hours', 0)) + ' jam')}",
-                f"📡 Data       : {payload.get('interval_used', 'N/A')}",
-                f"💰 MC filter  : ≥ {cls._num(payload.get('ath_mc_min_usd'), money=True)}",
+                f"⛓ Chain: {payload.get('chain', 'N/A').upper()}",
+                f"🕒 Window: {payload.get('window_label', 'N/A')}",
+                f"📡 Data: {payload.get('interval_used', 'N/A')}",
+                f"💰 ATH MC filter: ≥ {cls._num(payload.get('ath_mc_min_usd'), money=True)}",
                 "",
-                "📊 MARKET SNAPSHOT",
             ]
-
-            if not rows:
-                lines.append("Tidak ada market yang dikembalikan GMGN.")
-            else:
-                for i, coin in enumerate(rows, 1):
-                    name = coin.get("name") or coin.get("symbol") or "Unknown"
-                    symbol = coin.get("symbol") or ""
-                    price = cls._num(coin.get("price"))
-                    change = cls._change(coin.get("price_change_percent"))
-                    mc = cls._first(coin, "market_cap", "market_cap_usd", "mc")
-                    ath = cls._first(coin, "history_highest_market_cap", "ath_market_cap")
-                    vol = cls._first(coin, "volume_24h", "volume", "volume_usd")
-                    liq = cls._first(coin, "liquidity", "liquidity_usd")
-                    extra = []
-                    if mc is not None:
-                        extra.append("MC " + cls._num(mc, money=True))
-                    if ath is not None:
-                        extra.append("ATH " + cls._num(ath, money=True))
-                    if vol is not None:
-                        extra.append("Vol " + cls._num(vol, money=True))
-                    if liq is not None:
-                        extra.append("Liq " + cls._num(liq, money=True))
-                    stats = " • ".join(extra) if extra else "MC/Vol/Liq N/A"
-                    lines.extend([
-                        f"{i:02d}  {name} ({symbol})",
-                        f"    💵 {price}   📈 {change}",
-                        f"    {stats}",
-                    ])
-
-            lines += [
-                "",
-                "⚠️ DATA NOTE",
-                "Ranking yang diterima adalah snapshot GMGN pada interval data yang tersedia.",
-                "Filter ATH ≥ MC menggunakan field history_highest_market_cap GMGN.",
-                "Untuk 7/30 hari, window menentukan umur token yang dicari; ATH yang ditampilkan adalah ATH all-time GMGN, bukan ATH khusus window.",
-                "",
-                "🧠 Untuk deep research token: kirim CA (contract address).",
-            ]
-            return "\n".join(lines)
+            for i, coin in enumerate(rows, 1):
+                name = coin.get("name") or coin.get("symbol") or "Unknown"
+                symbol = coin.get("symbol") or ""
+                mc = cls._first(coin, "market_cap", "market_cap_usd", "mc")
+                ath = cls._first(coin, "history_highest_market_cap", "ath_market_cap")
+                vol = cls._first(coin, "volume_24h", "volume", "volume_usd")
+                liq = cls._first(coin, "liquidity", "liquidity_usd")
+                lines += [
+                    f"{i:02d}. {name} ({symbol})",
+                    f"   MC {cls._num(mc, True)} | ATH {cls._num(ath, True)}",
+                    f"   Vol {cls._num(vol, True)} | Liq {cls._num(liq, True)}",
+                ]
+            lines += ["", "⚠️ Fallback aktif: AI provider tidak merespons."]
+            return "
+".join(lines)
 
         token = cls._unwrap(payload.get("token", {}))
         if not isinstance(token, dict):
             token = {}
-
         name = token.get("name") or token.get("symbol") or "Unknown token"
         symbol = token.get("symbol") or ""
-        price = token.get("price")
-        mc = cls._first(token, "market_cap", "market_cap_usd", "mc")
-        fdv = cls._first(token, "fdv", "fully_diluted_valuation")
-        liq = cls._first(token, "liquidity", "liquidity_usd")
-        vol = cls._first(token, "volume_24h", "volume", "volume_usd")
-
         return "\n".join([
             "🧠 GMGN DEEP RESEARCH",
             "━━━━━━━━━━━━━━━━━━━━",
             f"🪙 {name} ({symbol})",
-            f"⛓ Chain : {payload.get('chain', 'N/A').upper()}",
-            f"📍 CA    : {payload.get('address', 'N/A')}",
+            f"⛓ Chain: {payload.get('chain', 'N/A').upper()}",
+            f"📍 CA: {payload.get('address', 'N/A')}",
             "",
-            "📌 KEY METRICS",
-            f"Price    : {cls._num(price)}",
-            f"Market Cap: {cls._num(mc, money=True)}",
-            f"FDV      : {cls._num(fdv, money=True)}",
-            f"Liquidity: {cls._num(liq, money=True)}",
-            f"24h Vol  : {cls._num(vol, money=True)}",
+            f"Price: {cls._num(token.get('price'))}",
+            f"MC: {cls._num(cls._first(token, 'market_cap', 'market_cap_usd', 'mc'), True)}",
+            f"Liquidity: {cls._num(cls._first(token, 'liquidity', 'liquidity_usd'), True)}",
+            f"24h Vol: {cls._num(cls._first(token, 'volume_24h', 'volume', 'volume_usd'), True)}",
             "",
-            "👥 HOLDERS / TRADERS",
-            "GMGN holder dan trader data berhasil diambil.",
-            "AI synthesis akan ditampilkan bila provider AI berhasil merespons.",
-            "",
-            "⚠️ Risk note: data ini adalah riset on-chain, bukan instruksi trading.",
+            "⚠️ AI fallback aktif. Data GMGN tersedia tetapi synthesis provider gagal.",
         ])
-
-    async def synthesize(self, request_text: str, research_payload) -> str:
-        if self.settings.gemini_api_key:
-            prompt = (
-                "You are a crypto/Web3 research assistant. Analyze only the supplied GMGN data. "
-                "Do not invent missing values. Distinguish observed facts from inference. "
-                "Write concise Indonesian suitable for Telegram. Use clean headings and bullets: "
-                "Kesimpulan, Data Utama, Holder/Trader, Risiko, Keterbatasan Data. "
-                "Do not output JSON. Do not repeat the entire raw payload. "
-                "Do not give fabricated ATH values. "
-                "User request:\n" + request_text +
-                "\n\nGMGN DATA:\n" + json.dumps(research_payload, ensure_ascii=False, default=str)
-            )
-            try:
-                url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-                response = await self.client.post(
-                    url,
-                    params={"key": self.settings.gemini_api_key},
-                    json={"contents": [{"parts": [{"text": prompt}]}]},
-                )
-                if response.is_success:
-                    body = response.json()
-                    answer = body["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    if answer:
-                        return answer
-            except Exception:
-                pass
-
-        return self._format_fallback(request_text, research_payload)
 
     async def close(self):
         await self.client.aclose()
