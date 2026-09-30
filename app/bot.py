@@ -1,4 +1,4 @@
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from .config import Settings
@@ -21,6 +21,29 @@ async def run():
             "Bot hanya membaca data dan tidak melakukan trading."
         )
 
+    def gmgn_keyboard(links):
+        rows = []
+        wallets = links.get("wallets") or []
+        tokens = links.get("tokens") or []
+
+        if wallets:
+            rows.append([InlineKeyboardButton("👛 WALLETS — GMGN", url=wallets[0]["url"])])
+            for i in range(0, len(wallets), 2):
+                row = []
+                for item in wallets[i:i + 2]:
+                    row.append(InlineKeyboardButton(item["label"][:32], url=item["url"]))
+                rows.append(row)
+
+        if tokens:
+            rows.append([InlineKeyboardButton("🪙 COINS — GMGN", url=tokens[0]["url"])])
+            for i in range(0, len(tokens), 2):
+                row = []
+                for item in tokens[i:i + 2]:
+                    row.append(InlineKeyboardButton(item["label"][:32], url=item["url"]))
+                rows.append(row)
+
+        return InlineKeyboardMarkup(rows) if rows else None
+
     async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message is None:
             return
@@ -32,7 +55,8 @@ async def run():
             result = await engine.research(update.message.text or "")
         except Exception as exc:
             result = f"❌ Research error: {str(exc)[:1000]}"
-        await update.message.reply_text(result[:4000])
+        markup = gmgn_keyboard(getattr(engine, "last_links", {}))
+        await update.message.reply_text(result[:4000], reply_markup=markup)
 
     app = Application.builder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", start))
