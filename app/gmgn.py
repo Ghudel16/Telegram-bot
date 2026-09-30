@@ -58,9 +58,22 @@ class GMGNClient:
         return await self.request("GET", "/v1/user/wallet_stats",
                                   {"chain": chain, "wallet_address": wallet, "period": period})
 
-    async def rank(self, chain="sol", interval="24h", limit=50):
-        return await self.request("GET", "/v1/market/rank",
-                                  {"chain": chain, "interval": interval, "limit": limit})
+    async def rank(self, chain="sol", interval="24h", limit=50, order_by="volume",
+                   min_history_highest_market_cap=None, max_created=None, min_market_cap=None):
+        params = {
+            "chain": chain,
+            "interval": interval,
+            "limit": limit,
+            "order_by": order_by,
+            "direction": "desc",
+        }
+        if min_history_highest_market_cap is not None:
+            params["min_history_highest_market_cap"] = min_history_highest_market_cap
+        if max_created:
+            params["max_created"] = max_created
+        if min_market_cap is not None:
+            params["min_marketcap"] = min_market_cap
+        return await self.request("GET", "/v1/market/rank", params)
 
     async def user_info(self):
         return await self.request("GET", "/v1/user/info")
