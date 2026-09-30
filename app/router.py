@@ -30,7 +30,8 @@ class AIRouter:
             "infercom": (self.settings.infercom_api_key, self.settings.infercom_base_url, self.settings.infercom_model),
             "morphllm": (self.settings.morphllm_api_key, self.settings.morphllm_base_url, self.settings.morphllm_model),
             "iamhc": (self.settings.iamhc_api_key, self.settings.iamhc_base_url, self.settings.iamhc_model),
-            "conduit": (self.settings.conduit_api_key or self.settings.conduit_api_key_2, self.settings.conduit_base_url, self.settings.conduit_model),
+            "conduit": (self.settings.conduit_api_key, self.settings.conduit_base_url, self.settings.conduit_model),
+            "conduit2": (self.settings.conduit_api_key_2, self.settings.conduit_base_url, self.settings.conduit_model),
         }
         order = [x.strip().lower() for x in self.settings.ai_router_order.split(",") if x.strip()]
         for name in order:
