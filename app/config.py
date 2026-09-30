@@ -5,6 +5,11 @@ class Settings(BaseSettings):
     gmgn_api_key: str | None = None
     gmgn_base_url: str | None = None
 
+    # 9Router: OpenAI-compatible AI gateway with provider fallback.
+    ninerouter_url: str | None = None
+    ninerouter_key: str | None = None
+    ninerouter_model: str = 'auto'
+
     # AI provider keys. Never commit these to GitHub.
     seekai_api_key: str | None = None
     gemini_api_key: str | None = None
@@ -37,7 +42,7 @@ class Settings(BaseSettings):
     iamhc_model: str = 'auto'
     conduit_base_url: str = 'https://conduit.ozdoev.net/v1'
     conduit_model: str = 'gpt-5.6'
-    ai_router_order: str = 'agentrouter,gemini,seekai,kapibala,tokenharbor,xkiro,infercom,morphllm,iamhc,conduit'
+    ai_router_order: str = '9router,agentrouter,gemini,seekai,kapibala,tokenharbor,xkiro,infercom,morphllm,iamhc,conduit,conduit2'
 
     database_url: str = 'sqlite:///data/bot.db'
     allowed_telegram_user_ids: str = ''
