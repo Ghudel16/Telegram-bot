@@ -45,6 +45,47 @@ def compact_rank(data):
 class ResearchEngine:
     def __init__(self, settings, gmgn, router):
         self.settings, self.gmgn, self.router = settings, gmgn, router
+        self.last_links = {"wallets": [], "tokens": []}
+
+    @staticmethod
+    def _gmgn_url(chain, kind, address):
+        if not address:
+            return None
+        chain_slug = {"sol": "sol", "eth": "eth", "base": "base", "bsc": "bsc", "tron": "tron"}.get(
+            str(chain).lower(), str(chain).lower()
+        )
+        return f"https://gmgn.ai/{chain_slug}/{kind}/{address}"
+
+    @staticmethod
+    def _link_label(address, name=None, symbol=None):
+        if name or symbol:
+            return f"{name or symbol}" + (f" ({symbol})" if name and symbol and name != symbol else "")
+        return ResearchEngine._short_wallet(address)
+
+    def _set_links(self, chain, wallets=None, tokens=None):
+        result = {"wallets": [], "tokens": []}
+        seen_wallets, seen_tokens = set(), set()
+        for item in wallets or []:
+            address = item if isinstance(item, str) else (item.get("address") if isinstance(item, dict) else None)
+            label = None if isinstance(item, str) else (item.get("label") if isinstance(item, dict) else None)
+            if address and address not in seen_wallets:
+                seen_wallets.add(address)
+                result["wallets"].append({
+                    "address": address,
+                    "label": label or self._short_wallet(address),
+                    "url": self._gmgn_url(chain, "address", address),
+                })
+        for item in tokens or []:
+            address = item if isinstance(item, str) else (item.get("address") if isinstance(item, dict) else None)
+            label = None if isinstance(item, str) else (item.get("label") if isinstance(item, dict) else None)
+            if address and address not in seen_tokens:
+                seen_tokens.add(address)
+                result["tokens"].append({
+                    "address": address,
+                    "label": label or self._link_label(address),
+                    "url": self._gmgn_url(chain, "token", address),
+                })
+        self.last_links = {"wallets": result["wallets"][:20], "tokens": result["tokens"][:20]}
 
     @staticmethod
     def _rows(obj, keys=("list", "activities", "rank")):
@@ -187,6 +228,7 @@ class ResearchEngine:
                     status = "BUYING" if buying else "HOLD"
                     hits[wallet] = {
                         "wallet": self._short_wallet(wallet),
+                        "address": wallet,
                         "status": status,
                         "hold_pct": row.get("amount_percentage"),
                         "buy_volume": row.get("buy_volume_cur"),
@@ -221,6 +263,7 @@ class ResearchEngine:
         }
 
     async def research(self, text: str) -> str:
+        self.last_links = {"wallets": [], "tokens": []}
         req = parse_request(text)
         address = extract_address(text)
         chain = detect_chain(text)
@@ -240,6 +283,15 @@ class ResearchEngine:
         )
         if early_wallet_request:
             payload = await self._early_wallet_overlap(text, chain, req)
+            wallet_links = []
+            token_links = []
+            for item in payload.get("overlaps", []):
+                if item.get("address"):
+                    token_links.append({"address": item["address"], "label": item.get("symbol") or item.get("token") or "Token"})
+                for wallet in item.get("wallets", []):
+                    if wallet.get("address"):
+                        wallet_links.append({"address": wallet["address"]})
+            self._set_links(chain, wallet_links, token_links)
             return (await self.router.synthesize(text, payload))[:3900]
 
         # First try to classify the free-form question with the AI router.
@@ -267,6 +319,7 @@ class ResearchEngine:
                     "wallet_stats": compact(stats),
                     "wallet_activity": compact(activity),
                 }
+                self._set_links(chain, [{"address": address}], [])
                 return (await self.router.synthesize(text, payload))[:3900]
             except Exception:
                 pass
@@ -341,6 +394,15 @@ class ResearchEngine:
                 "top_holders": holders_data,
                 "top_traders": traders_data,
             }
+            wallet_links = []
+            for row in self._rows(holders_data) + self._rows(traders_data):
+                if isinstance(row, dict) and row.get("address"):
+                    wallet_links.append({"address": row["address"]})
+            self._set_links(
+                chain,
+                wallet_links,
+                [{"address": address, "label": summary.get("symbol") or summary.get("name") or "Token"}],
+            )
             return (await self.router.synthesize(text, payload))[:3900]
 
         # Conceptual questions can be answered by AI without wasting a GMGN
@@ -383,4 +445,13 @@ class ResearchEngine:
             "sort": order_by,
             "market_rank": compact_rank(data),
         }
+        self._set_links(
+            chain,
+            [],
+            [
+                {"address": row.get("address"), "label": self._link_label(row.get("address"), row.get("name"), row.get("symbol"))}
+                for row in self._rows(data)
+                if isinstance(row, dict) and row.get("address")
+            ],
+        )
         return (await self.router.synthesize(text, payload))[:3900]
