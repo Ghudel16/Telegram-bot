@@ -223,6 +223,34 @@ class AIRouter:
 
     @classmethod
     def _format_fallback(cls, request_text: str, payload: dict) -> str:
+        if payload.get("mode") == "early_wallet_overlap":
+            lines = [
+                "🔎 EARLY WALLET OVERLAP",
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"⛓ Chain: {payload.get('chain', 'N/A').upper()}",
+                f"🕒 Window: {payload.get('window_label', 'N/A')}",
+                "👛 Rule: 20 wallet paling awal/token",
+                "🔗 Filter: minimal 3 wallet yang sama",
+                "",
+            ]
+            overlaps = payload.get("overlaps") or []
+            if not overlaps:
+                lines.append("Tidak ada hasil yang memenuhi filter minimal 3 wallet.")
+            else:
+                for i, item in enumerate(overlaps[:10], 1):
+                    lines += [
+                        f"{i:02d}. {item.get('token') or item.get('symbol') or 'Unknown'}",
+                        f"   Shared wallets: {item.get('shared_wallet_count', 0)}",
+                        f"   MC: {cls._num(item.get('market_cap'), True)} | ATH MC: {cls._num(item.get('ath_market_cap'), True)}",
+                    ]
+                    for w in item.get("wallets", [])[:8]:
+                        tags = w.get("tags") or []
+                        tag = f" | {','.join(tags[:2])}" if tags else ""
+                        lines.append(f"   • {w.get('wallet')} — {w.get('status', 'N/A')}{tag}")
+                    lines.append("")
+            lines.append("⚠️ AI fallback aktif.")
+            return "\n".join(lines)
+
         if payload.get("mode") == "market_discovery":
             raw = cls._unwrap(payload.get("market_rank", {}))
             rows = raw.get("rank", []) if isinstance(raw, dict) else []
