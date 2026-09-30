@@ -61,6 +61,26 @@ class GMGNClient:
         return await self.request("GET", "/v1/user/wallet_activity",
                                   {"chain": chain, "wallet_address": wallet, "limit": limit})
 
+    async def token_traders_filtered(self, chain, address, limit=100, tag=None,
+                                     order_by="amount_percentage", direction="desc"):
+        params = {"chain": chain, "address": address, "limit": min(int(limit), 100),
+                  "order_by": order_by, "direction": direction}
+        if tag:
+            params["tag"] = tag
+        return await self.request("GET", "/v1/market/token_top_traders", params)
+
+    async def token_holders_filtered(self, chain, address, limit=100, tag=None,
+                                     order_by="amount_percentage", direction="desc"):
+        params = {"chain": chain, "address": address, "limit": min(int(limit), 100),
+                  "order_by": order_by, "direction": direction}
+        if tag:
+            params["tag"] = tag
+        return await self.request("GET", "/v1/market/token_top_holders", params)
+
+    async def wallet_token_balance(self, chain, wallet, token):
+        return await self.request("GET", "/v1/user/wallet_token_balance",
+                                  {"chain": chain, "wallet_address": wallet, "token_address": token})
+
     async def wallet_stats(self, chain, wallet, period="7d"):
         return await self.request("GET", "/v1/user/wallet_stats",
                                   {"chain": chain, "wallet_address": wallet, "period": period})
