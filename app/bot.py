@@ -87,6 +87,10 @@ async def run():
     app.add_handler(CommandHandler("riset_mendalam", deep_research_command))
     app.add_handler(CommandHandler("risetmendalam", deep_research_command))
     app.add_handler(CommandHandler("riset", deep_research_command))
+    await app.bot.set_my_commands([
+        ("start", "Start bot"),
+        ("riset_mendalam", "Deep GMGN wallet convergence research"),
+    ])
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
     domain = settings.railway_public_domain
