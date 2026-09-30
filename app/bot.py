@@ -44,6 +44,30 @@ async def run():
 
         return InlineKeyboardMarkup(rows) if rows else None
 
+    async def deep_research_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if update.message is None:
+            return
+        if settings.allowed_ids and update.effective_user and update.effective_user.id not in settings.allowed_ids:
+            await update.message.reply_text("Akses tidak diizinkan.")
+            return
+        await update.message.chat.send_action(ChatAction.TYPING)
+        extra = " ".join(context.args).strip()
+        # Telegram command names cannot contain spaces, so /riset_mendalam is the
+        # canonical command. /riset mendalam ... is accepted as a convenience alias.
+        user_request = extra or (
+            "Lakukan riset mendalam default: cari coin Solana yang mencapai MC "
+            "minimal $3M dalam 24 jam, ambil minimal 20 wallet per kategori "
+            "(early buyer, early holder yang sudah exit profit, top trader, whale), "
+            "lalu cari token lain yang sedang BUY/HOLD oleh minimal 3 wallet yang sama. "
+            "Tampilkan hanya token hasil overlap akhir."
+        )
+        try:
+            result = await engine.deep_research(user_request)
+        except Exception as exc:
+            result = f"❌ Deep research error: {str(exc)[:1000]}"
+        markup = gmgn_keyboard(getattr(engine, "last_links", {}))
+        await update.message.reply_text(result[:4000], reply_markup=markup)
+
     async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message is None:
             return
@@ -60,6 +84,9 @@ async def run():
 
     app = Application.builder().token(settings.telegram_bot_token).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("riset_mendalam", deep_research_command))
+    app.add_handler(CommandHandler("risetmendalam", deep_research_command))
+    app.add_handler(CommandHandler("riset", deep_research_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
     domain = settings.railway_public_domain
