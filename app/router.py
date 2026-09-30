@@ -18,120 +18,157 @@ class AIRouter:
         return value
 
     @staticmethod
-    def _num(value: Any) -> str:
+    def _first(obj: dict, *keys):
+        for key in keys:
+            value = obj.get(key)
+            if value is not None and value != "":
+                return value
+        return None
+
+    @staticmethod
+    def _num(value: Any, money: bool = False) -> str:
         if value is None:
-            return "-"
+            return "N/A"
         try:
             n = float(value)
+            if money:
+                if abs(n) >= 1_000_000_000:
+                    return "$" + f"{n/1_000_000_000:.2f}B"
+                if abs(n) >= 1_000_000:
+                    return "$" + f"{n/1_000_000:.2f}M"
+                if abs(n) >= 1_000:
+                    return "$" + f"{n/1_000:.2f}K"
+                return "$" + f"{n:.4g}"
             if abs(n) >= 1_000_000_000:
-                return "\$" + f"{n/1_000_000_000:.2f}B"
+                return f"{n/1_000_000_000:.2f}B"
             if abs(n) >= 1_000_000:
-                return "\$" + f"{n/1_000_000:.2f}M"
+                return f"{n/1_000_000:.2f}M"
             if abs(n) >= 1_000:
-                return "\$" + f"{n/1_000:.2f}K"
+                return f"{n/1_000:.2f}K"
             return f"{n:.6g}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _change(value: Any) -> str:
+        if value is None:
+            return "N/A"
+        try:
+            return f"{float(value):+.2f}%"
         except (TypeError, ValueError):
             return str(value)
 
     @classmethod
     def _format_fallback(cls, request_text: str, payload: dict) -> str:
-        mode = payload.get("mode")
-
-        if mode == "market_discovery":
-            raw = payload.get("market_rank", {})
-            data = cls._unwrap(raw)
-            rows = data.get("rank", []) if isinstance(data, dict) else []
-            rows = rows[:15]
+        if payload.get("mode") == "market_discovery":
+            raw = cls._unwrap(payload.get("market_rank", {}))
+            rows = raw.get("rank", []) if isinstance(raw, dict) else []
+            rows = rows[:10]
 
             lines = [
                 "🔎 GMGN MARKET RESEARCH",
-                f"Chain: {payload.get('chain', '-')}",
-                f"Window: {payload.get('requested_window_hours', 0)} jam",
-                f"Interval data: {payload.get('interval_used', '-')}",
-                f"Filter MC: >= {cls._num(payload.get('ath_mc_min_usd'))}",
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"⛓ Chain      : {payload.get('chain', 'N/A').upper()}",
+                f"🕒 Window     : {payload.get('requested_window_hours', 0)} jam",
+                f"📡 Data       : {payload.get('interval_used', 'N/A')}",
+                f"💰 MC filter  : ≥ {cls._num(payload.get('ath_mc_min_usd'), money=True)}",
                 "",
-                "📊 TOP MARKET",
+                "📊 MARKET SNAPSHOT",
             ]
 
             if not rows:
-                lines.append("Tidak ada data market yang dikembalikan GMGN.")
+                lines.append("Tidak ada market yang dikembalikan GMGN.")
             else:
                 for i, coin in enumerate(rows, 1):
                     name = coin.get("name") or coin.get("symbol") or "Unknown"
-                    symbol = coin.get("symbol", "")
+                    symbol = coin.get("symbol") or ""
                     price = cls._num(coin.get("price"))
-                    change = coin.get("price_change_percent")
-                    mc = coin.get("market_cap") or coin.get("market_cap_usd") or coin.get("fdv")
-                    if isinstance(change, (int, float)):
-                        change_text = f"{change:+.2f}%"
-                    elif change is not None:
-                        change_text = str(change)
-                    else:
-                        change_text = "-"
-                    lines.append(
-                        f"{i}. {name} ({symbol}) | {price} | {change_text} | MC {cls._num(mc)}"
-                    )
+                    change = cls._change(coin.get("price_change_percent"))
+                    mc = cls._first(coin, "market_cap", "market_cap_usd", "mc")
+                    vol = cls._first(coin, "volume_24h", "volume", "volume_usd")
+                    liq = cls._first(coin, "liquidity", "liquidity_usd")
+                    extra = []
+                    if mc is not None:
+                        extra.append("MC " + cls._num(mc, money=True))
+                    if vol is not None:
+                        extra.append("Vol " + cls._num(vol, money=True))
+                    if liq is not None:
+                        extra.append("Liq " + cls._num(liq, money=True))
+                    stats = " • ".join(extra) if extra else "MC/Vol/Liq N/A"
+                    lines.extend([
+                        f"{i:02d}  {name} ({symbol})",
+                        f"    💵 {price}   📈 {change}",
+                        f"    {stats}",
+                    ])
 
             lines += [
                 "",
-                "⚠️ Catatan:",
-                "Data di atas adalah ranking market GMGN pada interval yang tersedia, bukan bukti historis ATH MC.",
-                "Untuk deep research token, kirim contract address (CA).",
+                "⚠️ DATA NOTE",
+                "Ranking yang diterima adalah snapshot GMGN pada interval data yang tersedia.",
+                "Filter ≥ MC hanya dapat diverifikasi bila field MC dikirim oleh endpoint.",
+                "Window 7 hari tidak diperlakukan sebagai bukti ATH historis.",
+                "",
+                "🧠 Untuk deep research token: kirim CA (contract address).",
             ]
             return "\n".join(lines)
 
-        token = payload.get("token", {})
-        token_data = cls._unwrap(token)
-        if not isinstance(token_data, dict):
-            token_data = {}
+        token = cls._unwrap(payload.get("token", {}))
+        if not isinstance(token, dict):
+            token = {}
 
-        name = token_data.get("name") or token_data.get("symbol") or "Unknown token"
-        symbol = token_data.get("symbol", "")
-        price = token_data.get("price")
-        mc = token_data.get("market_cap") or token_data.get("market_cap_usd") or token_data.get("fdv")
-        liquidity = token_data.get("liquidity") or token_data.get("liquidity_usd")
+        name = token.get("name") or token.get("symbol") or "Unknown token"
+        symbol = token.get("symbol") or ""
+        price = token.get("price")
+        mc = cls._first(token, "market_cap", "market_cap_usd", "mc")
+        fdv = cls._first(token, "fdv", "fully_diluted_valuation")
+        liq = cls._first(token, "liquidity", "liquidity_usd")
+        vol = cls._first(token, "volume_24h", "volume", "volume_usd")
 
-        lines = [
+        return "\n".join([
             "🧠 GMGN DEEP RESEARCH",
-            f"Token: {name} ({symbol})",
-            f"Chain: {payload.get('chain', '-')}",
-            f"CA: {payload.get('address', '-')}",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"🪙 {name} ({symbol})",
+            f"⛓ Chain : {payload.get('chain', 'N/A').upper()}",
+            f"📍 CA    : {payload.get('address', 'N/A')}",
             "",
-            "📌 METRICS",
-            f"Price: {cls._num(price)}",
-            f"Market Cap/FDV: {cls._num(mc)}",
-            f"Liquidity: {cls._num(liquidity)}",
+            "📌 KEY METRICS",
+            f"Price    : {cls._num(price)}",
+            f"Market Cap: {cls._num(mc, money=True)}",
+            f"FDV      : {cls._num(fdv, money=True)}",
+            f"Liquidity: {cls._num(liq, money=True)}",
+            f"24h Vol  : {cls._num(vol, money=True)}",
             "",
-            "🔐 SECURITY / HOLDERS / TRADERS",
-            "Data GMGN berhasil diambil. Untuk detail lengkap, analisis AI akan digunakan bila provider AI tersedia.",
+            "👥 HOLDERS / TRADERS",
+            "GMGN holder dan trader data berhasil diambil.",
+            "AI synthesis akan ditampilkan bila provider AI berhasil merespons.",
             "",
-            "⚠️ Ini analisis data, bukan instruksi trading.",
-        ]
-        return "\n".join(lines)
+            "⚠️ Risk note: data ini adalah riset on-chain, bukan instruksi trading.",
+        ])
 
     async def synthesize(self, request_text: str, research_payload) -> str:
         if self.settings.gemini_api_key:
             prompt = (
                 "You are a crypto/Web3 research assistant. Analyze only the supplied GMGN data. "
                 "Do not invent missing values. Distinguish observed facts from inference. "
-                "Return concise Indonesian plain text, suitable for Telegram, with these sections: "
-                "Kesimpulan, Data utama, Holder/Trader, Risiko, dan Keterbatasan data. "
-                "Never output raw JSON and never prefix the answer with 'GMGN DATA'. "
+                "Write concise Indonesian suitable for Telegram. Use clean headings and bullets: "
+                "Kesimpulan, Data Utama, Holder/Trader, Risiko, Keterbatasan Data. "
+                "Do not output JSON. Do not repeat the entire raw payload. "
+                "Do not give fabricated ATH values. "
                 "User request:\n" + request_text +
                 "\n\nGMGN DATA:\n" + json.dumps(research_payload, ensure_ascii=False, default=str)
             )
             try:
                 url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-                r = await self.client.post(
+                response = await self.client.post(
                     url,
                     params={"key": self.settings.gemini_api_key},
                     json={"contents": [{"parts": [{"text": prompt}]}]},
                 )
-                if r.is_success:
-                    body = r.json()
-                    text = body["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    if text:
-                        return text
+                if response.is_success:
+                    body = response.json()
+                    answer = body["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    if answer:
+                        return answer
             except Exception:
                 pass
 
