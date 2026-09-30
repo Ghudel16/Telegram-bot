@@ -262,6 +262,221 @@ class ResearchEngine:
             "overlaps": overlaps[:20],
         }
 
+    async def deep_research(self, text: str) -> str:
+        import asyncio
+        from collections import defaultdict
+
+        req = parse_request(text or "")
+        low = (text or "").lower()
+        window_hours = 24
+        mc_min = 3_000_000
+        wallet_min = 20
+        chain = "sol"
+
+        if any(k in low for k in ("48h", "2 hari")):
+            window_hours = 48
+        elif any(k in low for k in ("7 hari", "7d")):
+            window_hours = 168
+        if req.ath_mc_usd != 3_000_000:
+            mc_min = req.ath_mc_usd
+        if req.wallet_limit != 30:
+            wallet_min = max(20, min(req.wallet_limit, 50))
+
+        market = await self.gmgn.rank(
+            chain=chain,
+            interval="24h",
+            limit=10,
+            order_by="volume",
+            min_market_cap=mc_min,
+            max_created=str(window_hours) + "h",
+        )
+        candidates = self._rows(market)[:10]
+        if not candidates:
+            return "🤖 AI GMGN RESEARCH\n━━━━━━━━━━━━━━━━━━━━\n❌ Tidak ditemukan kandidat coin dengan MC minimum yang diminta."
+
+        category_wallets = {
+            "early_buyers": {},
+            "early_exit": {},
+            "top_traders": {},
+            "whales": {},
+        }
+        source_tokens = {}
+        errors = []
+        request_gap = 1.25
+
+        def add_wallet(category, row, source, reason=None):
+            if not isinstance(row, dict) or not row.get("address"):
+                return
+            wallet = row["address"]
+            category_wallets[category].setdefault(wallet, {
+                "address": wallet, "sources": [], "reasons": []
+            })
+            item = category_wallets[category][wallet]
+            if source not in item["sources"]:
+                item["sources"].append(source)
+            if reason and reason not in item["reasons"]:
+                item["reasons"].append(reason)
+
+        for coin in candidates:
+            address = coin.get("address")
+            if not address:
+                continue
+            symbol = coin.get("symbol") or coin.get("name") or "UNKNOWN"
+            source_tokens[address] = {
+                "symbol": symbol,
+                "name": coin.get("name"),
+                "market_cap": coin.get("market_cap"),
+                "ath_market_cap": coin.get("history_highest_market_cap"),
+            }
+            try:
+                raw = await self.gmgn.token_traders_filtered(
+                    chain, address, 100, None, "amount_percentage", "desc"
+                )
+                rows = self._rows(raw)
+                regular = [
+                    r for r in rows
+                    if isinstance(r, dict) and r.get("address")
+                    and str(r.get("addr_type", "0")) == "0"
+                ]
+
+                early = [r for r in regular if r.get("start_holding_at")]
+                early.sort(key=lambda r: self._num(r.get("start_holding_at")))
+                for r in early[:wallet_min]:
+                    add_wallet("early_buyers", r, symbol, "earliest start_holding_at")
+
+                exits = [
+                    r for r in regular
+                    if r.get("start_holding_at")
+                    and r.get("end_holding_at") not in (None, "", 0, "0")
+                    and self._num(r.get("realized_profit")) > 0
+                ]
+                exits.sort(key=lambda r: self._num(r.get("realized_profit")), reverse=True)
+                for r in exits[:wallet_min]:
+                    add_wallet("early_exit", r, symbol, "early entry + completed profitable exit")
+
+                for r in regular[:wallet_min]:
+                    add_wallet("top_traders", r, symbol, "top trader by amount_percentage")
+
+                await asyncio.sleep(request_gap)
+                raw_h = await self.gmgn.token_holders_filtered(
+                    chain, address, wallet_min, None, "amount_percentage", "desc"
+                )
+                holders = [
+                    r for r in self._rows(raw_h)
+                    if isinstance(r, dict) and r.get("address")
+                    and str(r.get("addr_type", "0")) == "0"
+                ]
+                for r in holders[:wallet_min]:
+                    add_wallet("whales", r, symbol, "largest current holder share")
+
+            except Exception as exc:
+                errors.append(symbol + ": " + str(exc)[:160])
+            await asyncio.sleep(request_gap)
+
+        union = {}
+        for category, items in category_wallets.items():
+            for wallet, item in items.items():
+                union.setdefault(wallet, {"address": wallet, "categories": [], "sources": []})
+                union[wallet]["categories"].append(category)
+                union[wallet]["sources"].extend(item["sources"])
+
+        selected = sorted(
+            union.values(),
+            key=lambda x: (-len(set(x["categories"])), -len(x["sources"]))
+        )[:60]
+
+        token_wallets = defaultdict(dict)
+        activity_errors = 0
+        for item in selected:
+            wallet = item["address"]
+            try:
+                raw_a = await self.gmgn.wallet_activity(chain, wallet, 50)
+                acts = self._rows(raw_a, keys=("activities", "list"))
+                latest = {}
+                for act in acts:
+                    if not isinstance(act, dict):
+                        continue
+                    event = str(act.get("event_type") or act.get("type") or "").lower()
+                    if event not in ("buy", "sell"):
+                        continue
+                    tok = act.get("token") or {}
+                    token = tok.get("address") or tok.get("token_address")
+                    if not token:
+                        continue
+                    ts = self._num(act.get("timestamp"))
+                    if token not in latest or ts >= latest[token]["timestamp"]:
+                        latest[token] = {
+                            "timestamp": ts,
+                            "event": event,
+                            "symbol": tok.get("symbol") or tok.get("name") or "UNKNOWN",
+                            "address": token,
+                        }
+                for token, ev in latest.items():
+                    if ev["event"] == "buy":
+                        token_wallets[token][wallet] = {
+                            "status": "BUY/HOLD",
+                            "symbol": ev["symbol"],
+                            "categories": union[wallet]["categories"],
+                            "source_wallet": wallet,
+                        }
+            except Exception:
+                activity_errors += 1
+            await asyncio.sleep(1.0)
+
+        overlaps = []
+        candidate_tokens = sorted(
+            token_wallets.items(), key=lambda kv: len(kv[1]), reverse=True
+        )
+        source_addresses = set(source_tokens)
+        for token, wallets in candidate_tokens:
+            if token in source_addresses or len(wallets) < 3:
+                continue
+            try:
+                info = await self.gmgn.token_info(chain, token)
+            except Exception:
+                info = {}
+            info = info if isinstance(info, dict) else {}
+            price = info.get("price") if isinstance(info.get("price"), dict) else {}
+            supply = self._num(info.get("circulating_supply") or info.get("total_supply"))
+            px = self._num(price.get("price"))
+            current_mc = self._num(info.get("market_cap")) or (px * supply if px and supply else 0)
+            overlaps.append({
+                "address": token,
+                "symbol": next(iter(wallets.values())).get("symbol") or info.get("symbol") or "UNKNOWN",
+                "name": info.get("name"),
+                "market_cap": current_mc,
+                "wallet_count": len(wallets),
+                "wallets": list(wallets.values())[:20],
+            })
+            await asyncio.sleep(0.75)
+            if len(overlaps) >= 15:
+                break
+
+        overlaps.sort(key=lambda x: x["wallet_count"], reverse=True)
+        wallet_links = []
+        token_links = []
+        for item in overlaps:
+            token_links.append({"address": item["address"], "label": item["symbol"]})
+            for w in item["wallets"]:
+                wallet_links.append({"address": w["source_wallet"]})
+        self._set_links(chain, wallet_links, token_links)
+
+        payload = {
+            "mode": "deep_wallet_convergence",
+            "chain": chain,
+            "window_label": str(window_hours) + " jam",
+            "candidate_rule": "MC >= $" + str(mc_min) + " and token age <= " + str(window_hours) + "h",
+            "wallet_min_per_category": wallet_min,
+            "category_counts": {name: len(items) for name, items in category_wallets.items()},
+            "candidate_count": len(candidates),
+            "final_overlaps": overlaps,
+            "activity_errors": activity_errors,
+            "rate_limit_or_api_errors": errors[:20],
+            "status_basis": "wallet_activity: latest observed event is BUY; this is a current-activity proxy, not an exact holdings snapshot.",
+            "important_limit": "Exact current holdings require GMGN portfolio holdings, documented as critical-auth (API key + private key).",
+        }
+        return (await self.router.synthesize(text, payload))[:3900]
+
     async def research(self, text: str) -> str:
         self.last_links = {"wallets": [], "tokens": []}
         req = parse_request(text)
