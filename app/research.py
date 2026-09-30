@@ -46,6 +46,180 @@ class ResearchEngine:
     def __init__(self, settings, gmgn, router):
         self.settings, self.gmgn, self.router = settings, gmgn, router
 
+    @staticmethod
+    def _rows(obj, keys=("list", "activities", "rank")):
+        if isinstance(obj, list):
+            return obj
+        if isinstance(obj, dict):
+            for key in keys:
+                value = obj.get(key)
+                if isinstance(value, list):
+                    return value
+            nested = obj.get("data")
+            if isinstance(nested, dict):
+                for key in keys:
+                    value = nested.get(key)
+                    if isinstance(value, list):
+                        return value
+        return []
+
+    @staticmethod
+    def _num(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _short_wallet(address):
+        if not address:
+            return "N/A"
+        return f"{address[:6]}…{address[-4:]}"
+
+    @staticmethod
+    def _early_wallets(rows, limit=20):
+        valid = [
+            r for r in rows
+            if isinstance(r, dict)
+            and r.get("address")
+            and r.get("start_holding_at")
+            and str(r.get("addr_type", "0")) == "0"
+        ]
+        valid.sort(key=lambda r: ResearchEngine._num(r.get("start_holding_at")))
+        return valid[:limit]
+
+    async def _early_wallet_overlap(self, text, chain, req):
+        # The token-trader endpoint exposes first-acquisition timing and current
+        # position metrics. We use the earliest 20 returned trader records per
+        # candidate token, then look for those same wallets in other candidates.
+        # This is deliberately limited to 8 candidates to avoid hammering GMGN's
+        # weighted trader endpoint.
+        if req.window_hours <= 24:
+            interval, period_label, max_created = "24h", "24 jam", "24h"
+        elif req.window_hours <= 168:
+            interval, period_label, max_created = "24h", "7 hari", "7d"
+        else:
+            interval, period_label, max_created = "24h", "30 hari", "30d"
+
+        market = await self.gmgn.rank(
+            chain=chain,
+            interval=interval,
+            limit=max(20, min(req.min_coins, 20)),
+            order_by="history_highest_market_cap",
+            min_history_highest_market_cap=req.ath_mc_usd,
+            max_created=max_created,
+        )
+        candidates = self._rows(market)[:8]
+        if not candidates:
+            return {
+                "mode": "early_wallet_overlap",
+                "window_label": period_label,
+                "error": "GMGN tidak mengembalikan kandidat token."
+            }
+
+        token_scans = []
+        global_early = {}
+        trader_maps = {}
+
+        for coin in candidates:
+            address = coin.get("address")
+            if not address:
+                continue
+            try:
+                raw = await self.gmgn.top_traders(chain, address, 100)
+            except Exception as exc:
+                token_scans.append({
+                    "token": coin.get("symbol") or coin.get("name") or "Unknown",
+                    "address": address,
+                    "error": str(exc)[:180],
+                })
+                continue
+
+            rows = self._rows(raw)
+            early = self._early_wallets(rows, 20)
+            if len(early) < 20:
+                token_scans.append({
+                    "token": coin.get("symbol") or coin.get("name") or "Unknown",
+                    "address": address,
+                    "early_wallets": len(early),
+                    "eligible": False,
+                })
+                continue
+
+            by_wallet = {r["address"]: r for r in rows if r.get("address")}
+            trader_maps[address] = by_wallet
+            token_scans.append({
+                "token": coin.get("symbol") or coin.get("name") or "Unknown",
+                "symbol": coin.get("symbol"),
+                "address": address,
+                "market_cap": coin.get("market_cap"),
+                "ath_market_cap": coin.get("history_highest_market_cap"),
+                "early_wallets": len(early),
+                "eligible": True,
+            })
+            for row in early:
+                wallet = row["address"]
+                global_early.setdefault(wallet, set()).add(address)
+
+        overlaps = []
+        for target in token_scans:
+            target_addr = target.get("address")
+            if not target_addr or not target.get("eligible") or target_addr not in trader_maps:
+                continue
+
+            hits = {}
+            for wallet, origin_tokens in global_early.items():
+                if target_addr in origin_tokens:
+                    continue
+                row = trader_maps[target_addr].get(wallet)
+                if not row:
+                    continue
+
+                buy = self._num(row.get("buy_volume_cur"))
+                sell = self._num(row.get("sell_volume_cur"))
+                net_amount = self._num(row.get("netflow_amount"))
+                hold = (
+                    (row.get("end_holding_at") in (None, "", 0, "0"))
+                    and (net_amount > 0 or self._num(row.get("amount_cur")) > 0)
+                )
+                buying = buy > 0 and buy >= sell
+                if hold or buying:
+                    status = "BUYING" if buying else "HOLD"
+                    hits[wallet] = {
+                        "wallet": self._short_wallet(wallet),
+                        "status": status,
+                        "hold_pct": row.get("amount_percentage"),
+                        "buy_volume": row.get("buy_volume_cur"),
+                        "sell_volume": row.get("sell_volume_cur"),
+                        "unrealized_profit": row.get("unrealized_profit"),
+                        "tags": row.get("tags") or row.get("maker_token_tags") or [],
+                        "origin_count": len(global_early.get(wallet, set())),
+                    }
+
+            if len(hits) >= 3:
+                overlaps.append({
+                    "token": target.get("token"),
+                    "symbol": target.get("symbol"),
+                    "address": target_addr,
+                    "market_cap": target.get("market_cap"),
+                    "ath_market_cap": target.get("ath_market_cap"),
+                    "shared_wallet_count": len(hits),
+                    "wallets": list(hits.values())[:20],
+                })
+
+        overlaps.sort(key=lambda x: x["shared_wallet_count"], reverse=True)
+        return {
+            "mode": "early_wallet_overlap",
+            "window_label": period_label,
+            "chain": chain,
+            "rule": "Earliest 20 wallets per candidate token by start_holding_at; show another token only when >=3 of those wallets are currently holding or have current buy flow in it.",
+            "current_status_basis": "GMGN trader fields: end_holding_at, amount_cur/netflow_amount, buy_volume_cur and sell_volume_cur.",
+            "candidate_count": len(candidates),
+            "eligible_tokens": sum(1 for x in token_scans if x.get("eligible")),
+            "token_scans": token_scans,
+            "overlaps": overlaps[:20],
+        }
+
     async def research(self, text: str) -> str:
         req = parse_request(text)
         address = extract_address(text)
@@ -53,6 +227,20 @@ class ResearchEngine:
 
         if not self.settings.gmgn_api_key:
             return "❌ GMGN_API_KEY belum dikonfigurasi di Railway."
+
+        # Some research requests need deterministic multi-token wallet analysis.
+        # Detect these before the generic AI planner so the planner cannot reduce
+        # the request to a simple market summary.
+        low = text.lower()
+        early_wallet_request = (
+            ("awal" in low or "early" in low or "marketcap kecil" in low or "market cap kecil" in low)
+            and ("wallet" in low or "walet" in low)
+            and ("hold" in low or "beli" in low or "buy" in low)
+            and ("3 wallet" in low or "3 wallets" in low or "minimal 3" in low or ">=3" in low)
+        )
+        if early_wallet_request:
+            payload = await self._early_wallet_overlap(text, chain, req)
+            return (await self.router.synthesize(text, payload))[:3900]
 
         # First try to classify the free-form question with the AI router.
         # If all AI providers fail, deterministic routing still works.
