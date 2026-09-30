@@ -276,10 +276,29 @@ class ResearchEngine:
         # the request to a simple market summary.
         low = text.lower()
         early_wallet_request = (
-            ("awal" in low or "early" in low or "marketcap kecil" in low or "market cap kecil" in low)
+            (
+                "awal" in low
+                or "early" in low
+                or "early-buyer" in low
+                or "early buyer" in low
+                or "marketcap kecil" in low
+                or "market cap kecil" in low
+                or "low mc" in low
+                or "low market cap" in low
+            )
             and ("wallet" in low or "walet" in low)
-            and ("hold" in low or "beli" in low or "buy" in low)
-            and ("3 wallet" in low or "3 wallets" in low or "minimal 3" in low or ">=3" in low)
+            and ("hold" in low or "beli" in low or "buy" in low or "currently" in low)
+            and (
+                "3 wallet" in low
+                or "3 wallets" in low
+                or "3+ " in low
+                or "3+" in low
+                or "minimal 3" in low
+                or ">=3" in low
+                or "same early-buyer" in low
+                or "same early buyer" in low
+                or "overlap" in low
+            )
         )
         if early_wallet_request:
             payload = await self._early_wallet_overlap(text, chain, req)
