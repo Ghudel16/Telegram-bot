@@ -21,6 +21,7 @@ class AIRouter:
 
     def _providers(self):
         mapping = {
+            "9router": (self.settings.ninerouter_key or "", self.settings.ninerouter_url, self.settings.ninerouter_model),
             "agentrouter": (self.settings.agentrouter_api_key, self.settings.agentrouter_base_url, self.settings.agentrouter_model),
             "gemini": (self.settings.gemini_api_key, None, "gemini-2.5-flash"),
             "seekai": (self.settings.seekai_api_key, self.settings.seekai_base_url, self.settings.seekai_model),
@@ -100,10 +101,32 @@ class AIRouter:
             data = r.json()
             return data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-        url = base_url.rstrip("/") + "/chat/completions"
+        base = (base_url or "").rstrip("/")
+        if not base:
+            raise RuntimeError("provider base URL missing")
+
+        # 9Router exposes an OpenAI-compatible gateway.
+        # With model=auto, discover a configured model dynamically.
+        if name == "9router" and model in ("", "auto"):
+            headers = {"Content-Type": "application/json"}
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            mr = await self.client.get(base + "/v1/models", headers=headers)
+            mr.raise_for_status()
+            models = (mr.json().get("data") or [])
+            if not models:
+                raise RuntimeError("9router has no configured models/providers")
+            model = models[0].get("id")
+            if not model:
+                raise RuntimeError("9router returned no usable model")
+
+        url = base + ("/v1/chat/completions" if name == "9router" else "/chat/completions")
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         r = await self.client.post(
             url,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            headers=headers,
             json={
                 "model": model,
                 "messages": messages,
