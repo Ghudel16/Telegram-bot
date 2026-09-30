@@ -288,7 +288,6 @@ class ResearchEngine:
             limit=10,
             order_by="volume",
             min_market_cap=mc_min,
-            max_created=str(window_hours) + "h",
         )
         candidates = self._rows(market)[:10]
         if not candidates:
@@ -465,7 +464,7 @@ class ResearchEngine:
             "mode": "deep_wallet_convergence",
             "chain": chain,
             "window_label": str(window_hours) + " jam",
-            "candidate_rule": "MC >= $" + str(mc_min) + " and token age <= " + str(window_hours) + "h",
+            "candidate_rule": "24h GMGN market window with MC >= $" + str(mc_min),
             "wallet_min_per_category": wallet_min,
             "category_counts": {name: len(items) for name, items in category_wallets.items()},
             "candidate_count": len(candidates),
