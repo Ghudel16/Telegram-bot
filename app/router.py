@@ -18,6 +18,7 @@ class AIRouter:
         )
         self.last_provider = None
         self.last_errors: list[str] = []
+        self._rr_cursor = 0
 
     def _providers(self):
         mapping = {
@@ -149,16 +150,25 @@ class AIRouter:
 
     async def ask(self, messages: list[dict]) -> str:
         self.last_errors = []
-        for name, key, base_url, model in self._providers():
+        providers = list(self._providers())
+        if not providers:
+            raise RuntimeError("Tidak ada AI provider yang memiliki konfigurasi key.")
+
+        # Round-robin across configured providers. A failed provider is skipped,
+        # while a successful provider becomes the starting point for the next call.
+        start = self._rr_cursor % len(providers)
+        ordered = providers[start:] + providers[:start]
+        for offset, (name, key, base_url, model) in enumerate(ordered):
             try:
                 answer = await self._call(name, key, base_url, model, messages)
                 if answer:
                     self.last_provider = name
+                    self._rr_cursor = (start + offset + 1) % len(providers)
                     return answer
             except Exception as exc:
                 self.last_errors.append(f"{name}: {str(exc)[:180]}")
         self.last_provider = None
-        raise RuntimeError("Tutti AI provider gagal: " + " | ".join(self.last_errors[:5]))
+        raise RuntimeError("Semua AI provider gagal: " + " | ".join(self.last_errors[:6]))
 
     async def plan(self, user_text: str) -> str:
         messages = [
@@ -189,6 +199,12 @@ class AIRouter:
             "Untuk MARKET, jangan membuat Markdown table. Tampilkan setiap token sebagai kartu bernomor dengan "
             "Name/Symbol, MC, ATH MC, current vs ATH, Volume, Liquidity, Holders dan CA. "
             "Untuk WALLET, tampilkan statistik utama lalu aktivitas penting. "
+            "Untuk EARLY_WALLET_OVERLAP, jelaskan bahwa 'early' berarti 20 wallet paling awal "
+            "berdasarkan start_holding_at dari dataset trader GMGN yang tersedia. "
+            "Hanya tampilkan token yang memiliki minimal 3 wallet yang sama. "
+            "Untuk setiap token tampilkan jumlah shared wallets, status BUYING/HOLD, short wallet, "
+            "dan asal token tempat wallet tersebut terdeteksi early. Jangan mengklaim hold jika data tidak mendukung. "
+            "Jika tidak ada token dengan >=3 wallet, katakan tidak ada hasil yang memenuhi filter. "
             "FORMAT TELEGRAM: plain text yang rapi, tanpa Markdown table, tanpa tanda |, tanpa ##, tanpa **, "
             "gunakan emoji dan bullet '•'. Maksimal 3500 karakter. "
             "Jangan memberikan kepastian profit atau instruksi buy/sell. "
