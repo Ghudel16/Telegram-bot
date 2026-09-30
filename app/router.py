@@ -251,6 +251,47 @@ class AIRouter:
             lines.append("⚠️ AI fallback aktif.")
             return "\n".join(lines)
 
+        if payload.get("mode") == "deep_wallet_convergence":
+            lines = [
+                "🔎 DEEP WALLET CONVERGENCE",
+                "━━━━━━━━━━━━━━━━━━━━",
+                "⛓ Chain: " + str(payload.get("chain", "N/A")).upper(),
+                "🕒 Window: " + str(payload.get("window_label", "N/A")),
+                "🎯 Candidates: " + str(payload.get("candidate_count", 0)),
+                "👛 Minimum/category: " + str(payload.get("wallet_min_per_category", 20)),
+                "",
+            ]
+            counts = payload.get("category_counts") or {}
+            for key, label in (
+                ("early_buyers", "Early buyers"),
+                ("early_exit", "Early exit"),
+                ("top_traders", "Top traders"),
+                ("whales", "Whales"),
+            ):
+                lines.append("• " + label + ": " + str(counts.get(key, 0)))
+            lines.append("")
+            overlaps = payload.get("final_overlaps") or []
+            if not overlaps:
+                lines.append("❌ Tidak ada token yang memenuhi overlap minimal 3 wallet.")
+            else:
+                for i, item in enumerate(overlaps[:10], 1):
+                    lines.append(
+                        str(i) + ". " + str(item.get("symbol") or item.get("name") or "UNKNOWN")
+                        + " — " + str(item.get("wallet_count", 0)) + " wallets"
+                    )
+                    if item.get("market_cap"):
+                        lines.append("   MC: " + cls._num(item.get("market_cap"), True))
+                    for w in item.get("wallets", [])[:6]:
+                        cats = ",".join(w.get("categories") or [])
+                        lines.append("   • " + cls._short_wallet(w.get("source_wallet")) + " — " + str(w.get("status", "N/A")) + " [" + cats + "]")
+                    lines.append("")
+            if payload.get("rate_limit_or_api_errors"):
+                lines.append("⚠️ Sebagian request GMGN gagal/rate-limited; angka tersebut tidak dihitung sebagai zero-match.")
+            if payload.get("activity_errors"):
+                lines.append("⚠️ " + str(payload.get("activity_errors")) + " wallet activity request gagal.")
+            lines.append("ℹ️ BUY/HOLD di workflow ini berbasis event aktivitas terbaru, bukan snapshot holdings exact.")
+            return "\n".join(lines)
+
         if payload.get("mode") == "market_discovery":
             raw = cls._unwrap(payload.get("market_rank", {}))
             rows = raw.get("rank", []) if isinstance(raw, dict) else []
